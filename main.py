@@ -100,7 +100,7 @@ def load_twitter_dataset():
     texts, labels = [], []
     for split in dataset:
         for item in dataset[split]:
-            texts.append(item["text"])
+            texts.append(item["tweet"])
             labels.append(item["label"])
 
     print(f"  Total data Twitter: {len(texts)}")
