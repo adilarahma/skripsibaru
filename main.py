@@ -30,15 +30,13 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import StratifiedKFold, cross_validate
+from sklearn.pipeline import Pipeline
 from sklearn.svm import SVC
 
 from evaluation import (
     create_results_dataframe,
-    evaluate_model,
     generate_all_visualizations,
-    plot_confusion_matrix,
     print_best_configurations,
-    print_classification_report,
 )
 from preprocessing import preprocess_text
 
@@ -78,180 +76,34 @@ RANDOM_STATE = 42
 # FUNGSI LOAD DATA
 # ============================================================================
 
-def _load_from_huggingface(dataset_name):
-    """Memuat dataset dari HuggingFace dan gabungkan semua split."""
-    dataset = load_dataset(dataset_name)
+def load_reddit_dataset():
+    """Memuat dataset Reddit Indonesia Sarcastic dari HuggingFace."""
+    print("\n[INFO] Memuat dataset Reddit Indonesia Sarcastic...")
+    dataset = load_dataset("w11wo/reddit_indonesia_sarcastic")
+
     texts, labels = [], []
     for split in dataset:
         for item in dataset[split]:
             texts.append(item["text"])
             labels.append(item["label"])
-    return texts, labels
 
-
-def _load_from_csv(csv_path):
-    """Memuat dataset dari file CSV lokal (kolom: text, label)."""
-    df = pd.read_csv(csv_path)
-    return df["text"].tolist(), df["label"].tolist()
-
-
-def _generate_sample_data(n_samples, avg_length, dataset_type, seed=42):
-    """
-    Generate sample data untuk demonstrasi jika HuggingFace tidak bisa diakses
-    dan belum ada file CSV lokal.
-
-    Data ini BUKAN data asli -- hanya untuk menguji pipeline.
-    Gunakan dataset asli dari HuggingFace untuk hasil riset sesungguhnya.
-    """
-    rng = np.random.RandomState(seed)
-
-    # Kumpulan frasa sarkastik dan non-sarkastik Bahasa Indonesia
-    sarcastic_templates = [
-        "wah hebat banget ya {subj} bisa {verb} kayak gitu",
-        "oh iya pasti {subj} paling {adj} sedunia",
-        "bagus banget {subj} emang paling bener",
-        "wah pinter banget sih {subj} bisa {verb}",
-        "iya iya {subj} emang selalu {adj}",
-        "luar biasa {subj} {verb} terus aja ya",
-        "mantap jiwa {subj} emang gak ada lawan",
-        "wah keren banget {subj} {verb} kayak gitu",
-        "oh jadi {subj} emang paling {adj} ya ternyata",
-        "ya ampun {subj} {adj} banget deh pokoknya",
-        "selamat ya {subj} berhasil {verb} lagi",
-        "emang paling {adj} deh {subj} gak ada tandingan",
-        "kok bisa sih {subj} {verb} kayak gitu hebat banget",
-        "ya sudah lah {subj} emang paling {adj} sih",
-        "wah salut deh sama {subj} bisa {verb} terus",
-    ]
-    non_sarcastic_templates = [
-        "{subj} hari ini {verb} di {place}",
-        "menurut saya {subj} cukup {adj} dalam hal ini",
-        "{subj} sedang {verb} untuk {purpose}",
-        "semoga {subj} bisa {verb} dengan baik",
-        "saya rasa {subj} perlu {verb} lebih banyak",
-        "{subj} memang {adj} dan patut diapresiasi",
-        "informasi tentang {subj} sangat {adj} dan bermanfaat",
-        "{subj} sudah {verb} sejak lama dan hasilnya {adj}",
-        "kalau {subj} mau {verb} harus lebih {adj}",
-        "banyak orang bilang {subj} itu {adj} sekali",
-        "pengalaman {subj} {verb} ternyata {adj} sekali",
-        "saya setuju {subj} harus {verb} demi kebaikan bersama",
-        "{subj} berencana {verb} minggu depan di {place}",
-        "kabar terbaru {subj} sudah {verb} dengan {adj}",
-        "terima kasih {subj} sudah {verb} untuk kita semua",
-    ]
-    subjects = ["pemerintah", "dia", "mereka", "kamu", "orang itu", "anak itu",
-                "bos", "dosen", "teman saya", "netizen", "artis itu", "politisi"]
-    verbs = ["bekerja", "bicara", "membuat kebijakan", "posting", "menjelaskan",
-             "berjanji", "membantu", "belajar", "mengeluh", "berkomentar",
-             "mengkritik", "menolong", "berdiskusi", "menulis", "mengajar"]
-    adjs = ["pintar", "bagus", "hebat", "luar biasa", "sempurna", "bijaksana",
-            "jujur", "rajin", "cerdas", "baik hati", "keren", "mantap"]
-    places = ["kampus", "kantor", "rumah", "sekolah", "jakarta", "bandung",
-              "media sosial", "forum online", "grup chat"]
-    purposes = ["kebaikan bersama", "masa depan", "masyarakat", "pendidikan",
-                "pekerjaan", "proyek baru"]
-
-    texts, labels = [], []
-    half = n_samples // 2
-
-    for i in range(n_samples):
-        is_sarcastic = i < half
-        templates = sarcastic_templates if is_sarcastic else non_sarcastic_templates
-        tmpl = rng.choice(templates)
-        text = tmpl.format(
-            subj=rng.choice(subjects), verb=rng.choice(verbs),
-            adj=rng.choice(adjs), place=rng.choice(places),
-            purpose=rng.choice(purposes),
-        )
-        # Variasi panjang teks sesuai dataset_type
-        if dataset_type == "reddit":
-            repeats = rng.randint(1, 4)
-            extra_templates = sarcastic_templates if is_sarcastic else non_sarcastic_templates
-            for _ in range(repeats):
-                extra = rng.choice(extra_templates).format(
-                    subj=rng.choice(subjects), verb=rng.choice(verbs),
-                    adj=rng.choice(adjs), place=rng.choice(places),
-                    purpose=rng.choice(purposes),
-                )
-                text += " " + extra
-        texts.append(text)
-        labels.append(1 if is_sarcastic else 0)
-
-    # Shuffle
-    indices = rng.permutation(n_samples)
-    texts = [texts[i] for i in indices]
-    labels = [labels[i] for i in indices]
-
-    return texts, labels
-
-
-def load_reddit_dataset():
-    """Memuat dataset Reddit Indonesia Sarcastic."""
-    print("\n[INFO] Memuat dataset Reddit Indonesia Sarcastic...")
-
-    # Coba 1: Load dari file CSV lokal
-    csv_path = os.path.join("data", "reddit_indonesia_sarcastic.csv")
-    if os.path.exists(csv_path):
-        print(f"  Memuat dari CSV lokal: {csv_path}")
-        texts, labels = _load_from_csv(csv_path)
-        print(f"  Total data Reddit: {len(texts)}")
-        print(f"  Distribusi label: {pd.Series(labels).value_counts().to_dict()}")
-        return texts, labels
-
-    # Coba 2: Load dari HuggingFace
-    try:
-        print("  Mencoba download dari HuggingFace...")
-        texts, labels = _load_from_huggingface("w11wo/reddit_indonesia_sarcastic")
-        print(f"  Total data Reddit: {len(texts)}")
-        print(f"  Distribusi label: {pd.Series(labels).value_counts().to_dict()}")
-        return texts, labels
-    except Exception as e:
-        print(f"  [WARNING] Gagal download dari HuggingFace: {e}")
-
-    # Fallback: Generate sample data untuk demonstrasi
-    print("  [FALLBACK] Menggunakan sample data untuk demonstrasi pipeline.")
-    print("  >> Untuk hasil riset, gunakan dataset asli dari HuggingFace <<")
-    print("  >> atau letakkan CSV di data/reddit_indonesia_sarcastic.csv  <<")
-    texts, labels = _generate_sample_data(
-        n_samples=3000, avg_length=50, dataset_type="reddit", seed=42,
-    )
-    print(f"  Total sample data Reddit: {len(texts)}")
+    print(f"  Total data Reddit: {len(texts)}")
     print(f"  Distribusi label: {pd.Series(labels).value_counts().to_dict()}")
     return texts, labels
 
 
 def load_twitter_dataset():
-    """Memuat dataset Twitter Indonesia Sarcastic."""
+    """Memuat dataset Twitter Indonesia Sarcastic dari HuggingFace."""
     print("\n[INFO] Memuat dataset Twitter Indonesia Sarcastic...")
+    dataset = load_dataset("w11wo/twitter_indonesia_sarcastic")
 
-    # Coba 1: Load dari file CSV lokal
-    csv_path = os.path.join("data", "twitter_indonesia_sarcastic.csv")
-    if os.path.exists(csv_path):
-        print(f"  Memuat dari CSV lokal: {csv_path}")
-        texts, labels = _load_from_csv(csv_path)
-        print(f"  Total data Twitter: {len(texts)}")
-        print(f"  Distribusi label: {pd.Series(labels).value_counts().to_dict()}")
-        return texts, labels
+    texts, labels = [], []
+    for split in dataset:
+        for item in dataset[split]:
+            texts.append(item["text"])
+            labels.append(item["label"])
 
-    # Coba 2: Load dari HuggingFace
-    try:
-        print("  Mencoba download dari HuggingFace...")
-        texts, labels = _load_from_huggingface("w11wo/twitter_indonesia_sarcastic")
-        print(f"  Total data Twitter: {len(texts)}")
-        print(f"  Distribusi label: {pd.Series(labels).value_counts().to_dict()}")
-        return texts, labels
-    except Exception as e:
-        print(f"  [WARNING] Gagal download dari HuggingFace: {e}")
-
-    # Fallback: Generate sample data untuk demonstrasi
-    print("  [FALLBACK] Menggunakan sample data untuk demonstrasi pipeline.")
-    print("  >> Untuk hasil riset, gunakan dataset asli dari HuggingFace <<")
-    print("  >> atau letakkan CSV di data/twitter_indonesia_sarcastic.csv <<")
-    texts, labels = _generate_sample_data(
-        n_samples=1000, avg_length=20, dataset_type="twitter", seed=99,
-    )
-    print(f"  Total sample data Twitter: {len(texts)}")
+    print(f"  Total data Twitter: {len(texts)}")
     print(f"  Distribusi label: {pd.Series(labels).value_counts().to_dict()}")
     return texts, labels
 
@@ -328,27 +180,28 @@ def run_experiment(texts, labels, dataset_name, output_dir="results"):
         print(f"  N-gram: {ngram_name} -> range={ngram_range}")
         print(f"{'─'*50}")
 
-        # TF-IDF Vectorization
-        tfidf = TfidfVectorizer(
-            ngram_range=ngram_range,
-            max_features=50000,
-            sublinear_tf=True,
-            min_df=2,
-            max_df=0.95,
-        )
-        X = tfidf.fit_transform(texts)
-        print(f"  Dimensi fitur TF-IDF: {X.shape}")
-
         for clf_name, clf in CLASSIFIERS.items():
             current += 1
             print(f"\n  [{current}/{total_experiments}] {clf_name} + {ngram_name}")
 
             start_time = time.time()
 
+            # Pipeline: TF-IDF di-fit hanya pada training fold (no data leakage)
+            pipeline = Pipeline([
+                ("tfidf", TfidfVectorizer(
+                    ngram_range=ngram_range,
+                    max_features=50000,
+                    sublinear_tf=True,
+                    min_df=2,
+                    max_df=0.95,
+                )),
+                ("clf", clf),
+            ])
+
             # Cross-validation
             scoring = ["accuracy", "precision_weighted", "recall_weighted", "f1_weighted"]
             cv_results = cross_validate(
-                clf, X, labels_array, cv=cv, scoring=scoring,
+                pipeline, texts, labels_array, cv=cv, scoring=scoring,
                 return_train_score=False, n_jobs=-1,
             )
 
