@@ -11,7 +11,7 @@ from Sastrawi.Stemmer.StemmerFactory import StemmerFactory
 
 # Inisialisasi stemmer Sastrawi (Bahasa Indonesia)
 _factory = StemmerFactory()
-stemmer = _factory.createStemmer()
+stemmer = _factory.create_stemmer()
 
 # Daftar stopwords Bahasa Indonesia
 INDONESIAN_STOPWORDS = {
